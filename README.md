@@ -6,7 +6,8 @@ A learning experience platform with a highly optimized analytics tracking archit
 
 This application serves structured learning content (Books → Chapters → Content) and passively records deep telemetry into how users interact with the material. It features video playback, tracking hooks, and a real-time analytics dashboard rendering aggregated performance data.
 
-**Live Application:** [https://book-system-1-f3im.onrender.com/](https://book-system-1-f3im.onrender.com/)
+**Live Application:** [https://book-system-1-f3im.onrender.com/](https://book-system-1-f3im.onrender.com/)  
+**Demo Video:** [Watch on Google Drive](https://drive.google.com/file/d/1J9N12zGKO31g_ivUoEQRUpIwI0eDOFfR/view?usp=sharing)
 
 ---
 
