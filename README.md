@@ -8,39 +8,59 @@ This application serves structured learning content (Books → Chapters → Cont
 
 ---
 
-## 🏗 System Architecture & Decisions
+## 🏗 System Architecture & Reasoning
 
-### 1. Data Schema & Modeling
+The application employs a modern decoupled architecture using **Next.js (App Router)** as the full-stack framework for React server/client components and API routes. The backend relies on a **PostgreSQL** relational database for stringent data integrity, with stateless **JWT tokens** stored in `HttpOnly` cookies for secure authentication. 
 
-The Postgres database is split into two logical zones:
-- **Core Entities:** `books`, `chapters`, `content`. These tables use UUIDs with cascading deletes, representing the rigid structure of the application.
-- **Telemetry Layer:** `click_events`, `progress_events`, `watch_events`. These act as append-only ledgers to safely and quickly record time-series style data at high velocity without mutating core tables.
+**Architectural Reasoning:**
+By combining Next.js with PostgreSQL, we achieve a serverless-friendly frontend with a highly normalized, robust backend. The stateless JWT setup allows horizontal scaling of the Node.js processes without requiring sticky sessions or a centralized session store (like Redis). The telemetry ingest pipeline is decoupled from the main content-serving pipeline, ensuring analytics gathering does not degrade the core user learning experience.
 
-**Why this model?**
-By decoupling content state from event logs, the platform can endure high write throughput. Analytics queries on the ledger tables are isolated from the transactional demands of the core UI.
+---
 
-### 2. High-Frequency Event Handling (Performance)
+## 💾 Database Schema & Explanation
 
-A major challenge with video streams and scrolling is the sheer volume of telemetry events (`timeupdate`, `onscroll` fires dozens of times per second). 
+The PostgreSQL database is organized into two primary domains: **Core Entities** (structural content) and **Telemetry Domain** (user high-frequency events).
 
-- **Frontend Batching / Accumulation:** Instead of `POSTing` to the server every time the user scrolls or watches a second of video, the React frontend accumulates this state in memory using lightweight `useRef` hooks (which avoids React re-renders). 
-- **SendBeacon / Keepalive:** The batched data is flushed to the database asynchronously on component unmount and `beforeunload`. We use `fetch({ keepalive: true })` to guarantee the payload is delivered to the Next.js API even if the browser window is closed, offloading network bottlenecks.
+### Core Entities (Read-Heavy)
+- **`books`**: `id (UUID)`, `title`, `description`, `created_at`
+  The highest level of content grouping. Uses UUIDs for universally unique identification without exposing chronological creation order.
+- **`chapters`**: `id (UUID)`, `book_id (FK)`, `title`, `order_index`, `created_at`
+  Organizes content logically and maintains sequential flow with `order_index`. Cascading deletes on `book_id`.
+- **`content`**: `id (UUID)`, `chapter_id (FK)`, `title`, `body_text`, `video_url`, `order_index`
+  The atomic unit of learning material containing instructional text and video references.
+- **`users`**: `id (SERIAL)`, `username (UNIQUE)`, `password_hash`, `created_at`
+  Handles authentication. Uses `SERIAL` for efficiency on high-velocity relational queries from the telemetry tables. Passwords are cryptographically hashed via `bcrypt`.
 
-**Why this scales:** 
-At scale, making a DB round-trip for every 1-second watch increment would immediately overwhelm connection pools. By batching to the session level, database writes are reduced by 99%, making PostgreSQL perfectly viable as the primary datastore without requiring an intermediary message queue (like Kafka) or Redis.
+### Telemetry / Analytics Domain (Write-Heavy)
+These tables act as append-only ledgers to handle high-velocity time-series data without mutating rows.
+- **`click_events`**: `id (SERIAL)`, `user_id (VARCHAR)`, `button_label`, `content_id (FK)`
+  Logs discrete user interactions (e.g., "Take Quiz", "Download Notes") to track feature usage.
+- **`progress_events`**: `id (SERIAL)`, `user_id`, `content_id (FK)`, `scroll_depth (INT)`, `completed (BOOLEAN)`
+  Tracks reading depth percentage and completion status, vital for finding where students drop off during long texts.
+- **`watch_events`**: `id (SERIAL)`, `user_id`, `video_id`, `content_id (FK)`, `watched_seconds (INT)`
+  Logs accumulated video watch time per session.
 
-### 3. Query Performance
+---
 
-The analytics dashboard requires joining massive telemetry tables (`watch_events`) with reference tables (`content`).
-- **Indexing:** In production, foreign keys like `content_id` in the event tables natively boost join performance.
-- **Rollups (Future Scale):** While the current system queries the raw event logs using `GROUP BY`, as data volume exceeds millions of rows, the architecture maps perfectly to Postgres Materialized Views. The `GROUP BY we.video_id, c.title` operation can easily be shifted entirely out of the route handler into a background refresh view.
+## ⚡ Performance Decisions
 
-### 4. Justification for Third Analytic: "Scroll Depth / Completion Progress"
+Designing an analytics-heavy learning platform requires specific performance optimizations to prevent tracking logic from bogging down the database and client.
 
-In addition to explicit actions (Clicks) and active consumption (Video Watch Time), I introduced **Scroll Depth / Content Completion Rate**.
+### 1. In-Memory Telemetry Batching
+**Decision:** Instead of sending an HTTP `POST` for every video second watched or scroll tick, the React client accumulates values in memory using lightweight `useRef` hooks. 
+**Reasoning:** Tracking scroll position or 1-second video intervals normally fires hundreds of requests. `useRef` updates without causing React re-renders, and holding the data client-side reduces network requests by orders of magnitude. 
 
-**Business Value:**
-Learning platforms suffer from silent drop-off where users read a paragraph and leave without ever triggering a negative action. By tracking maximum scroll percentage (`progress_events`), curriculum designers can immediately spot if a specific written lesson is too long or boring (e.g. 100% video completion but only 15% text scroll completion). This helps pinpoint exactly where engagement is lost.
+### 2. Deferring Network Requests with Keep-Alive
+**Decision:** The batched analytics data is transmitted exactly once using `fetch('/api/...', { keepalive: true })` inside a `beforeunload` or component unmount lifecycle event.
+**Reasoning:** `keepalive: true` instructs the browser to guarantee network transmission in the background even if the user closes the tab mid-request. This guarantees 100% data capture reliability without blocking thread execution or page navigation.
+
+### 3. Append-Only Ledger Database Pattern
+**Decision:** The database never updates specific event records (e.g., `UPDATE watch_events SET watched_seconds = ...`). Instead, we perform only `INSERT` queries, summing the results asynchronously. 
+**Reasoning:** High-concurrency `UPDATE` queries on the same row can cause row lock contention and slow down the database. An append-only pattern completely eliminates database row locks, allowing PostgreSQL to easily swallow thousands of concurrent writes from telemetry webhooks.
+
+### 4. Client-Side Video Rendering Strategy
+**Decision:** Using a custom wrapper (`ClientOnlyPlayer` / explicit `iframe` handling) circumventing Next.js Server-Side Rendering (SSR) for the YouTube iframe integration.
+**Reasoning:** Hydrating large third-party iframe APIs during server rendering leads to DOM mismatches and performance warnings. Executing the player strictly client-side offloads rendering overhead from the server, improving Time to First Byte (TTFB) and preventing prop-mangling from `next/dynamic`.
 
 ---
 

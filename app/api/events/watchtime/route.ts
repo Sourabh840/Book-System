@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSession } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
-    const { user_id, video_id, content_id, watched_seconds } = await req.json();
+    const session = await getSession();
+    if (!session?.userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const user_id = session.userId.toString();
+
+    const { video_id, content_id, watched_seconds } = await req.json();
 
     await pool.query(
       `INSERT INTO watch_events (user_id, video_id, content_id, watched_seconds)

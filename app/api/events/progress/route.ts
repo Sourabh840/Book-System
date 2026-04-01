@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import pool from '@/lib/db';
+import { getSession } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
-    const { user_id, content_id, scroll_depth } = await req.json();
+    const session = await getSession();
+    if (!session?.userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const user_id = session.userId.toString();
+
+    const { content_id, scroll_depth } = await req.json();
     const completed = scroll_depth >= 90;
 
     await pool.query(
